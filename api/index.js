@@ -1,45 +1,39 @@
 const { Transformer } = require('markmap-lib');
 
 module.exports = async (req, res) => {
-  // CORS 设置
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   if (req.method === 'OPTIONS') return res.status(200).end();
-
   if (req.method !== 'POST') return res.status(405).send('Method Not Allowed');
 
   try {
     const { content, style } = req.body;
     
-    // 1. 使用 markmap-lib 解析 Markdown 为节点树
     const transformer = new Transformer();
-    // transform 返回 { root: Node, features: ... }
+    // transform 返回的是根节点对象
     const { root } = transformer.transform(content || '# 无内容');
 
-    // 2. 配色方案 (微信风格)
+    // 配色方案
     const colors = [
-      style?.rootBgColor || '#E7F3FF', // 根节点背景
-      '#FFF0F0', // 层级1背景
-      '#F0FFF0', // 层级2背景
-      '#FFFFF0'  // 层级3+背景
+      style?.rootBgColor || '#E7F3FF', 
+      '#FFF0F0', 
+      '#F0FFF0', 
+      '#FFFFF0'
     ];
     
-    const borderColors = [
-      'transparent', 
-      '#FF7F7F', // 连线颜色1
-      '#66CC66', // 连线颜色2
-      '#FFCC00'  // 连线颜色3
-    ];
-    
-    // 3. 递归生成 HTML 的函数
-    // 微信公众号核心技巧：使用 flex 布局 + border 画线
+    // 递归生成 HTML 的函数 (已修复属性名问题)
     function renderNode(node, depth = 0, isLast = false) {
       if (!node) return '';
       
-      const hasChildren = node.c && node.c.length > 0;
-      const content = node.v; // 节点文本
+      // --- 关键修改点 START ---
+      // 兼容新旧版本的字段名
+      const nodeText = node.content || node.v || ''; 
+      const childrenList = node.children || node.c || [];
+      // --- 关键修改点 END ---
+
+      const hasChildren = childrenList.length > 0;
       
-      // 样式变量
+      // 样式定义
       const bgColor = depth === 0 ? colors[0] : '#FFFFFF';
       const textColor = depth === 0 ? (style?.rootTextColor || '#1890FF') : '#333';
       const fontSize = depth === 0 ? '18px' : '15px';
@@ -48,8 +42,6 @@ module.exports = async (req, res) => {
       const borderRadius = '6px';
       const boxShadow = '0 2px 4px rgba(0,0,0,0.05)';
       const border = depth === 0 ? `2px solid ${style?.rootBgColor || '#1890FF'}` : '1px solid #ddd';
-
-      // 连线样式 (右侧分支线)
       const lineColor = '#ddd'; 
 
       // 构建子节点 HTML
@@ -57,19 +49,10 @@ module.exports = async (req, res) => {
       if (hasChildren) {
         childrenHtml = `<div style="display: flex; flex-direction: column; justify-content: center; margin-left: 20px; border-left: 2px solid ${lineColor};">`;
         
-        node.c.forEach((child, index) => {
-          const isChildLast = index === node.c.length - 1;
-          // 子节点连线修正 (如果是最后一个子节点，需要遮挡掉多余的竖线)
-          const connectorStyle = `
-            position: relative;
-            padding-left: 15px;
-            margin: 5px 0;
-          `;
-          
-          // 这里的伪元素用 span 模拟，因为微信对伪元素支持有限，直接用 border-bottom 画横线
+        childrenList.forEach((child, index) => {
+          const isChildLast = index === childrenList.length - 1;
+          const connectorStyle = `position: relative; padding-left: 15px; margin: 5px 0;`;
           const horizontalLine = `<div style="position: absolute; left: 0; top: 50%; width: 15px; height: 2px; background-color: ${lineColor};"></div>`;
-          
-          // 遮挡线：如果是最后一个元素，遮挡左侧多余的竖线
           const coverLine = isChildLast ? `<div style="position: absolute; left: -2px; top: 50%; bottom: 0; width: 4px; background-color: #fff;"></div>` : '';
 
           childrenHtml += `
@@ -84,6 +67,7 @@ module.exports = async (req, res) => {
       }
 
       // 构建当前节点 HTML
+      // 注意这里使用了 nodeText 变量
       const nodeHtml = `
         <div style="
           background: ${bgColor}; 
@@ -98,30 +82,23 @@ module.exports = async (req, res) => {
           min-width: 50px;
           position: relative;
           z-index: 2;
-        ">${content}</div>
+        ">${nodeText}</div>
       `;
 
-      // 组合：根节点和其他节点布局略有不同
-      if (depth === 0) {
-        return `
-          <div style="display: flex; align-items: center; font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;">
-            ${nodeHtml}
-            ${hasChildren ? `<div style="width: 20px; height: 2px; background-color: ${lineColor};"></div>` : ''}
-            ${childrenHtml}
-          </div>
-        `;
-      } else {
-        return `
-          <div style="display: flex; align-items: center;">
-            ${nodeHtml}
-            ${hasChildren ? `<div style="width: 20px; height: 2px; background-color: ${lineColor};"></div>` : ''}
-            ${childrenHtml}
-          </div>
-        `;
-      }
+      // 组合布局
+      const wrapperStyle = depth === 0 
+        ? "display: flex; align-items: center; font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;"
+        : "display: flex; align-items: center;";
+
+      return `
+        <div style="${wrapperStyle}">
+          ${nodeHtml}
+          ${hasChildren ? `<div style="width: 20px; height: 2px; background-color: ${lineColor};"></div>` : ''}
+          ${childrenHtml}
+        </div>
+      `;
     }
 
-    // 4. 生成最终 HTML 容器
     const finalHtml = `
       <section style="overflow-x: auto; padding: 20px; background: #fff;">
         ${renderNode(root)}
@@ -131,7 +108,7 @@ module.exports = async (req, res) => {
       </section>
     `;
 
-    res.setHeader('Content-Type', 'text/html'); // 这里的 Content-Type 设为 html 方便预览，但在 n8n 里会被当成 string
+    res.setHeader('Content-Type', 'text/html');
     res.status(200).send(finalHtml);
 
   } catch (error) {
