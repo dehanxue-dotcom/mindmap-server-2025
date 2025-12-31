@@ -30,17 +30,22 @@ module.exports = async (req, res) => {
     // ---------------------------------------------------------
     // 3. 安全检查与数据获取
     // ---------------------------------------------------------
-    // 检查 body 是否存在，这是之前报错的核心原因
-    if (!req.body) {
+    
+    // 如果 req.body 是字符串（有时 n8n 会发纯字符串过来），尝试手动解析
+    if (typeof req.body === 'string') {
+      try {
+        req.body = JSON.parse(req.body);
+      } catch (e) {
+        // 解析失败则忽略，后面会报错
+      }
+    }
+
+    // 检查 body 是否存在
+    if (!req.body || Object.keys(req.body).length === 0) {
         throw new Error('Request body is empty. Ensure Content-Type is application/json');
     }
 
     const { content, options, style } = req.body;
-
-    if (!content) {
-      res.status(400).send('Bad Request: markdown content is required.');
-      return;
-    }
 
     // ---------------------------------------------------------
     // 4. 核心逻辑 (Markmap 生成)
