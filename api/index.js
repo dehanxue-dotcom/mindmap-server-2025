@@ -1,90 +1,141 @@
 const { Transformer } = require('markmap-lib');
 
 module.exports = async (req, res) => {
-  // 1. 设置跨域和请求方法检查
+  // CORS 设置
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   if (req.method === 'OPTIONS') return res.status(200).end();
+
   if (req.method !== 'POST') return res.status(405).send('Method Not Allowed');
 
   try {
-    const { content, options, style } = req.body;
-    if (!content) return res.status(400).send('Markdown content is required');
-
-    // 2. 转换 Markdown
+    const { content, style } = req.body;
+    
+    // 1. 使用 markmap-lib 解析 Markdown 为节点树
     const transformer = new Transformer();
-    const { root, features } = transformer.transform(content);
-    const assets = transformer.getUsedAssets(features);
+    // transform 返回 { root: Node, features: ... }
+    const { root } = transformer.transform(content || '# 无内容');
 
-    // 3. 手动构建 CSS 和 JS (替代报错的 loadCSS)
-    let styleTags = '';
-    let scriptTags = '';
+    // 2. 配色方案 (微信风格)
+    const colors = [
+      style?.rootBgColor || '#E7F3FF', // 根节点背景
+      '#FFF0F0', // 层级1背景
+      '#F0FFF0', // 层级2背景
+      '#FFFFF0'  // 层级3+背景
+    ];
+    
+    const borderColors = [
+      'transparent', 
+      '#FF7F7F', // 连线颜色1
+      '#66CC66', // 连线颜色2
+      '#FFCC00'  // 连线颜色3
+    ];
+    
+    // 3. 递归生成 HTML 的函数
+    // 微信公众号核心技巧：使用 flex 布局 + border 画线
+    function renderNode(node, depth = 0, isLast = false) {
+      if (!node) return '';
+      
+      const hasChildren = node.c && node.c.length > 0;
+      const content = node.v; // 节点文本
+      
+      // 样式变量
+      const bgColor = depth === 0 ? colors[0] : '#FFFFFF';
+      const textColor = depth === 0 ? (style?.rootTextColor || '#1890FF') : '#333';
+      const fontSize = depth === 0 ? '18px' : '15px';
+      const fontWeight = depth === 0 ? 'bold' : 'normal';
+      const padding = depth === 0 ? '10px 20px' : '8px 12px';
+      const borderRadius = '6px';
+      const boxShadow = '0 2px 4px rgba(0,0,0,0.05)';
+      const border = depth === 0 ? `2px solid ${style?.rootBgColor || '#1890FF'}` : '1px solid #ddd';
 
-    // 处理样式
-    if (assets.styles) {
-      assets.styles.forEach(item => {
-        if (item.type === 'stylesheet') {
-          styleTags += `<link rel="stylesheet" href="${item.data.href}">\n`;
-        } else if (item.type === 'style') {
-          styleTags += `<style>${item.data}</style>\n`;
-        }
-      });
+      // 连线样式 (右侧分支线)
+      const lineColor = '#ddd'; 
+
+      // 构建子节点 HTML
+      let childrenHtml = '';
+      if (hasChildren) {
+        childrenHtml = `<div style="display: flex; flex-direction: column; justify-content: center; margin-left: 20px; border-left: 2px solid ${lineColor};">`;
+        
+        node.c.forEach((child, index) => {
+          const isChildLast = index === node.c.length - 1;
+          // 子节点连线修正 (如果是最后一个子节点，需要遮挡掉多余的竖线)
+          const connectorStyle = `
+            position: relative;
+            padding-left: 15px;
+            margin: 5px 0;
+          `;
+          
+          // 这里的伪元素用 span 模拟，因为微信对伪元素支持有限，直接用 border-bottom 画横线
+          const horizontalLine = `<div style="position: absolute; left: 0; top: 50%; width: 15px; height: 2px; background-color: ${lineColor};"></div>`;
+          
+          // 遮挡线：如果是最后一个元素，遮挡左侧多余的竖线
+          const coverLine = isChildLast ? `<div style="position: absolute; left: -2px; top: 50%; bottom: 0; width: 4px; background-color: #fff;"></div>` : '';
+
+          childrenHtml += `
+            <div style="${connectorStyle}">
+              ${horizontalLine}
+              ${coverLine}
+              ${renderNode(child, depth + 1, isChildLast)}
+            </div>
+          `;
+        });
+        childrenHtml += `</div>`;
+      }
+
+      // 构建当前节点 HTML
+      const nodeHtml = `
+        <div style="
+          background: ${bgColor}; 
+          color: ${textColor}; 
+          font-size: ${fontSize}; 
+          font-weight: ${fontWeight}; 
+          padding: ${padding}; 
+          border-radius: ${borderRadius}; 
+          border: ${border};
+          box-shadow: ${boxShadow};
+          display: inline-block;
+          min-width: 50px;
+          position: relative;
+          z-index: 2;
+        ">${content}</div>
+      `;
+
+      // 组合：根节点和其他节点布局略有不同
+      if (depth === 0) {
+        return `
+          <div style="display: flex; align-items: center; font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;">
+            ${nodeHtml}
+            ${hasChildren ? `<div style="width: 20px; height: 2px; background-color: ${lineColor};"></div>` : ''}
+            ${childrenHtml}
+          </div>
+        `;
+      } else {
+        return `
+          <div style="display: flex; align-items: center;">
+            ${nodeHtml}
+            ${hasChildren ? `<div style="width: 20px; height: 2px; background-color: ${lineColor};"></div>` : ''}
+            ${childrenHtml}
+          </div>
+        `;
+      }
     }
 
-    // 注入你的自定义样式 (颜色等)
-    const customCSS = `
-      <style>
-        svg.markmap { width: 100%; height: 100vh; background-color: ${style?.background || 'transparent'}; }
-        .markmap-node > circle { fill: ${style?.rootBgColor || '#ACD5F2'}; }
-        .markmap-text { fill: ${style?.textColor || '#333'}; font: ${style?.font || '16px sans-serif'}; }
-        .markmap-link { stroke: ${style?.lineColor || '#444'}; }
-      </style>
+    // 4. 生成最终 HTML 容器
+    const finalHtml = `
+      <section style="overflow-x: auto; padding: 20px; background: #fff;">
+        ${renderNode(root)}
+        <div style="text-align: center; margin-top: 20px; color: #ccc; font-size: 12px;">
+           Generated by n8n Flow
+        </div>
+      </section>
     `;
 
-    // 处理脚本
-    if (assets.scripts) {
-      assets.scripts.forEach(item => {
-        if (item.type === 'script') {
-           if (item.data.src) {
-             scriptTags += `<script src="${item.data.src}"></script>\n`;
-           } else if (item.data.textContent) {
-             scriptTags += `<script>${item.data.textContent}</script>\n`;
-           }
-        }
-      });
-    }
-
-    // 4. 拼接最终 HTML
-    // 注意：这不是静态SVG图片，而是包含JS的动态页面
-    const html = `
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-${styleTags}
-${customCSS}
-</head>
-<body style="margin:0;padding:0;overflow:hidden;">
-<svg id="markmap"></svg>
-${scriptTags}
-<script>
-  (function() {
-    const { Markmap } = window.markmap;
-    // 渲染导图
-    Markmap.create('#markmap', ${JSON.stringify(options || null)}, ${JSON.stringify(root)});
-  })();
-</script>
-</body>
-</html>
-    `;
-
-    // 5. 返回 HTML 字符串
-    res.setHeader('Content-Type', 'text/html');
-    res.status(200).send(html);
+    res.setHeader('Content-Type', 'text/html'); // 这里的 Content-Type 设为 html 方便预览，但在 n8n 里会被当成 string
+    res.status(200).send(finalHtml);
 
   } catch (error) {
     console.error(error);
-    res.status(500).send(`Server Error: ${error.message}`);
+    res.status(500).send(`Error: ${error.message}`);
   }
 };
