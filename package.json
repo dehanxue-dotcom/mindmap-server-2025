@@ -1,5 +1,5 @@
 {
-  "engines": { "node": "18.x" },
+  "engines": { "node": "24.x" },
   "dependencies": {
     "markmap-lib": "0.15.4"
   }
