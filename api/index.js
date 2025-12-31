@@ -1,104 +1,90 @@
 const { Transformer } = require('markmap-lib');
 
 module.exports = async (req, res) => {
-  // ---------------------------------------------------------
-  // 1. CORS 配置 (解决 n8n 或浏览器跨域调用问题)
-  // ---------------------------------------------------------
-  res.setHeader('Access-Control-Allow-Credentials', true);
-  res.setHeader('Access-Control-Allow-Origin', '*'); // 允许任何来源，生产环境建议指定具体域名
-  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
-  res.setHeader(
-    'Access-Control-Allow-Headers',
-    'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version'
-  );
-
-  // 处理浏览器的 OPTIONS 预检请求
-  if (req.method === 'OPTIONS') {
-    res.status(200).end();
-    return;
-  }
-
-  // ---------------------------------------------------------
-  // 2. 请求方法验证
-  // ---------------------------------------------------------
-  if (req.method !== 'POST') {
-    res.status(405).send('Method Not Allowed');
-    return;
-  }
+  // 1. 设置跨域和请求方法检查
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  if (req.method === 'OPTIONS') return res.status(200).end();
+  if (req.method !== 'POST') return res.status(405).send('Method Not Allowed');
 
   try {
-    // ---------------------------------------------------------
-    // 3. 安全检查与数据获取
-    // ---------------------------------------------------------
-    
-    // 如果 req.body 是字符串（有时 n8n 会发纯字符串过来），尝试手动解析
-    if (typeof req.body === 'string') {
-      try {
-        req.body = JSON.parse(req.body);
-      } catch (e) {
-        // 解析失败则忽略，后面会报错
-      }
-    }
-
-    // 检查 body 是否存在
-    if (!req.body || Object.keys(req.body).length === 0) {
-        throw new Error('Request body is empty. Ensure Content-Type is application/json');
-    }
-
     const { content, options, style } = req.body;
+    if (!content) return res.status(400).send('Markdown content is required');
 
-    // ---------------------------------------------------------
-    // 4. 核心逻辑 (Markmap 生成)
-    // ---------------------------------------------------------
-    
-    // 动态加载 markmap-cli (适应 ESM 模块)
-    const { default: markmap } = await import('markmap-cli');
-
+    // 2. 转换 Markdown
     const transformer = new Transformer();
     const { root, features } = transformer.transform(content);
     const assets = transformer.getUsedAssets(features);
 
-    // 样式注入逻辑
-    const customStyle = `
-      svg.markmap { 
-        background-color: ${style?.background || 'transparent'};
-      }
-      .markmap-text {
-        fill: ${style?.textColor || '#333333'};
-        font: ${style?.font || '16px "Microsoft YaHei", sans-serif'};
-      }
-      .markmap-line {
-        stroke: ${style?.lineColor || '#444444'};
-      }
-      .markmap-node[data-depth="0"] > circle {
-        fill: ${style?.rootBgColor || '#ACD5F2'};
-      }
-      .markmap-node[data-depth="0"] > text {
-        fill: ${style?.rootTextColor || '#1E4615'}; 
-      }
+    // 3. 手动构建 CSS 和 JS (替代报错的 loadCSS)
+    let styleTags = '';
+    let scriptTags = '';
+
+    // 处理样式
+    if (assets.styles) {
+      assets.styles.forEach(item => {
+        if (item.type === 'stylesheet') {
+          styleTags += `<link rel="stylesheet" href="${item.data.href}">\n`;
+        } else if (item.type === 'style') {
+          styleTags += `<style>${item.data}</style>\n`;
+        }
+      });
+    }
+
+    // 注入你的自定义样式 (颜色等)
+    const customCSS = `
+      <style>
+        svg.markmap { width: 100%; height: 100vh; background-color: ${style?.background || 'transparent'}; }
+        .markmap-node > circle { fill: ${style?.rootBgColor || '#ACD5F2'}; }
+        .markmap-text { fill: ${style?.textColor || '#333'}; font: ${style?.font || '16px sans-serif'}; }
+        .markmap-link { stroke: ${style?.lineColor || '#444'}; }
+      </style>
     `;
-    // 注意：原代码中 #1E461 只有5位，这里补全为6位 #1E4615，请根据需要修改
 
-    const finalStyle = markmap.loadCSS(assets.styles);
-    finalStyle.push({ type: 'style', data: customStyle });
+    // 处理脚本
+    if (assets.scripts) {
+      assets.scripts.forEach(item => {
+        if (item.type === 'script') {
+           if (item.data.src) {
+             scriptTags += `<script src="${item.data.src}"></script>\n`;
+           } else if (item.data.textContent) {
+             scriptTags += `<script>${item.data.textContent}</script>\n`;
+           }
+        }
+      });
+    }
 
-    const svg = await markmap.createMarkmap({
-        ...options,
-        content: root,
-        output: undefined, // 设为 undefined 以便返回字符串而不是写入文件
-        style: finalStyle,
-        script: markmap.loadJS(assets.scripts, { getMarkmap: false })
-    });
-    
-    // ---------------------------------------------------------
-    // 5. 返回结果
-    // ---------------------------------------------------------
-    res.setHeader('Content-Type', 'image/svg+xml');
-    res.status(200).send(svg);
+    // 4. 拼接最终 HTML
+    // 注意：这不是静态SVG图片，而是包含JS的动态页面
+    const html = `
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+${styleTags}
+${customCSS}
+</head>
+<body style="margin:0;padding:0;overflow:hidden;">
+<svg id="markmap"></svg>
+${scriptTags}
+<script>
+  (function() {
+    const { Markmap } = window.markmap;
+    // 渲染导图
+    Markmap.create('#markmap', ${JSON.stringify(options || null)}, ${JSON.stringify(root)});
+  })();
+</script>
+</body>
+</html>
+    `;
+
+    // 5. 返回 HTML 字符串
+    res.setHeader('Content-Type', 'text/html');
+    res.status(200).send(html);
 
   } catch (error) {
-    console.error('Server Error:', error);
-    // 返回详细错误信息以便调试
-    res.status(500).send(`Internal Server Error: ${error.message}`);
+    console.error(error);
+    res.status(500).send(`Server Error: ${error.message}`);
   }
 };
